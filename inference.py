@@ -1,62 +1,70 @@
 """
-inference.py — OpenEnv Client for Hospital Resource Environment
+inference.py — Root-level baseline runner for the Hospital Resource Environment.
 
-Complies with hackathon requirements:
-- Uses OpenAI client for decisions
-- Uses ENV_BASE_URL for environment
-- Uses API_BASE_URL for LLM (optional override)
-- Strict [START], [STEP], [END] logs
+Hackathon requirements:
+- Uses OpenAI client for all LLM calls
+- Uses API_BASE_URL for the LLM endpoint
+- Uses ENV_BASE_URL for the environment server
+- Emits strict [START], [STEP], [END] stdout logs
 """
 
-import os
 import json
+import os
+from typing import Any, List
+
 import requests
 from openai import OpenAI
 
-# ==============================
-# Environment variables
-# ==============================
-
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 ENV_BASE_URL = os.getenv(
     "ENV_BASE_URL",
-    "https://ramcharan2905-hospital-resource-env.hf.space"
-)
-
-API_BASE_URL = os.getenv("API_BASE_URL", None)  # optional override
+    "https://ramcharan2905-hospital-resource-env.hf.space",
+).rstrip("/")
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
-HF_TOKEN   = os.getenv("HF_TOKEN", "")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
-# OpenAI client (LLM ONLY)
-if API_BASE_URL:
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
-else:
-    client = OpenAI(api_key=HF_TOKEN)
+client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "EMPTY")
 
 
-# ==============================
-# LLM Decision
-# ==============================
+def _extract_json_array(text: str) -> List[dict[str, Any]]:
+    if not text:
+        return []
 
-def get_action_from_llm(observation):
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        return []
+
+    try:
+        parsed = json.loads(text[start : end + 1])
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def get_action_from_llm(observation: dict[str, Any]) -> List[dict[str, Any]]:
+    if not HF_TOKEN:
+        return []
+
     prompt = f"""
-You are a Hospital Resource Manager.
+You are a hospital resource manager.
 
 Rules:
-- Prioritize ESI-1, then ESI-2
-- Assign correct doctor tier
-- Assign beds when needed
-- Discharge immediately when treated
-- Avoid illegal actions
+- Prioritize ESI-1, then ESI-2.
+- Use the correct doctor tier.
+- Assign beds when needed.
+- Discharge patients as soon as they are ready.
+- Avoid illegal actions.
 
 State:
-{json.dumps(observation)}
+{json.dumps(observation, ensure_ascii=False)}
 
-Output ONLY a JSON array:
+Output ONLY a JSON array of actions like:
 [
-  {{"patient_id": "...", "type": "assign_doctor", "doctor_tier": "t1"}},
-  {{"patient_id": "...", "type": "assign_bed"}},
-  {{"patient_id": "...", "type": "discharge"}}
+  {{"patient_id": "p1", "type": "assign_doctor", "doctor_tier": "t1"}},
+  {{"patient_id": "p2", "type": "assign_bed"}},
+  {{"patient_id": "p3", "type": "discharge"}}
 ]
 """
 
@@ -64,90 +72,81 @@ Output ONLY a JSON array:
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0
+            temperature=0,
         )
-
-        content = response.choices[0].message.content.strip()
-
-        start = content.find('[')
-        end = content.rfind(']') + 1
-
-        if start != -1 and end != -1:
-            return json.loads(content[start:end])
-
-        return []
-
-    except Exception as e:
-        print(f"Decision Error: {e}")
+        content = response.choices[0].message.content or ""
+        return _extract_json_array(content.strip())
+    except Exception:
         return []
 
 
-# ==============================
-# Main loop
-# ==============================
-
-def run_inference(task_id="hard"):
-
-    # RESET
+def run_inference(task_id: str) -> None:
     try:
-        r = requests.post(
+        reset_resp = requests.post(
             f"{ENV_BASE_URL}/reset",
-            json={"task_id": task_id, "seed": 42}
+            json={"task_id": task_id, "seed": 42},
+            timeout=30,
         )
-        r.raise_for_status()
-        obs = r.json()
-    except Exception as e:
-        print(f"[ERROR] reset failed: {e}")
+        reset_resp.raise_for_status()
+        obs = reset_resp.json()
+    except Exception as exc:
+        print("[START]")
+        print(json.dumps({"task_id": task_id, "model": MODEL_NAME}))
+        print("[END]")
+        print(json.dumps({"task_id": task_id, "error": f"reset failed: {exc}"}))
         return
 
-    # STRICT FORMAT
     print("[START]")
-    print(json.dumps({
-        "task_id": task_id,
-        "model": MODEL_NAME
-    }))
+    print(json.dumps({"task_id": task_id, "model": MODEL_NAME}))
 
     done = False
-    total_score = 0.0
     tick = 0
+    total_score = float(obs.get("current_episode_score", 0.0))
 
     while not done:
-
         actions = get_action_from_llm(obs)
 
         try:
-            r = requests.post(
+            step_resp = requests.post(
                 f"{ENV_BASE_URL}/step",
-                json={"action": actions}
+                json={"action": actions},
+                timeout=30,
             )
-            r.raise_for_status()
-            data = r.json()
+            step_resp.raise_for_status()
+            data = step_resp.json()
 
             obs = data["observation"]
-            reward = data["reward"]
-            done = data["done"]
-
-            tick = obs.get("current_tick", tick + 1)
-            total_score = obs.get("current_episode_score", total_score)
+            reward = float(data.get("reward", 0.0))
+            done = bool(data.get("done", False))
+            tick = int(obs.get("current_tick", tick + 1))
+            total_score = float(obs.get("current_episode_score", total_score))
 
             print("[STEP]")
-            print(json.dumps({
-                "tick": tick,
-                "reward": round(reward, 2),
-                "score": round(total_score, 2)
-            }))
-
-        except Exception as e:
-            print(f"[ERROR] step failed: {e}")
+            print(
+                json.dumps(
+                    {
+                        "tick": tick,
+                        "reward": round(reward, 2),
+                        "score_so_far": round(total_score, 2),
+                    }
+                )
+            )
+        except Exception as exc:
+            print("[STEP]")
+            print(json.dumps({"tick": tick, "error": str(exc)}))
             break
 
     print("[END]")
-    print(json.dumps({
-        "task_id": task_id,
-        "final_score": round(total_score, 4)
-    }))
+    print(
+        json.dumps(
+            {
+                "task_id": task_id,
+                "final_score": round(total_score, 4),
+            }
+        )
+    )
 
 
 if __name__ == "__main__":
-    for task in ["easy", "medium", "hard"]:
+    for task in ("easy", "medium", "hard"):
         run_inference(task)

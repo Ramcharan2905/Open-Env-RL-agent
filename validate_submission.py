@@ -1,43 +1,47 @@
-import requests
 import os
+import requests
 
-def validate():
+
+def validate() -> None:
     base_url = os.getenv(
         "ENV_BASE_URL",
-        "https://ramcharan2905-hospital-resource-env.hf.space"
-    )
+        "https://ramcharan2905-hospital-resource-env.hf.space",
+    ).rstrip("/")
 
     print(f"--- Validating OpenEnv Server at {base_url} ---")
 
-    # HEALTH
     try:
         r = requests.get(f"{base_url}/health", timeout=10)
-        print("[PASS]" if r.status_code == 200 else "[FAIL]", "/health")
-    except Exception as e:
-        print("[ERROR] /health:", e)
+        print("[PASS] /health" if r.status_code == 200 else f"[FAIL] /health ({r.status_code})")
+    except Exception as exc:
+        print(f"[ERROR] /health: {exc}")
         return
 
-    # RESET
     try:
         r = requests.post(
             f"{base_url}/reset",
             json={"task_id": "easy", "seed": 42},
-            timeout=10
+            timeout=10,
         )
-        print("[PASS]" if r.status_code == 200 else "[FAIL]", "/reset")
-    except Exception as e:
-        print("[ERROR] /reset:", e)
+        print("[PASS] /reset" if r.status_code == 200 else f"[FAIL] /reset ({r.status_code})")
+    except Exception as exc:
+        print(f"[ERROR] /reset: {exc}")
 
-    # STEP
     try:
         r = requests.post(
             f"{base_url}/step",
             json={"action": None},
-            timeout=10
+            timeout=10,
         )
-        print("[PASS]" if r.status_code == 200 else "[FAIL]", "/step")
-    except Exception as e:
-        print("[ERROR] /step:", e)
+        print("[PASS] /step" if r.status_code == 200 else f"[FAIL] /step ({r.status_code})")
+    except Exception as exc:
+        print(f"[ERROR] /step: {exc}")
+
+    try:
+        r = requests.get(f"{base_url}/state", timeout=10)
+        print("[PASS] /state" if r.status_code == 200 else f"[FAIL] /state ({r.status_code})")
+    except Exception as exc:
+        print(f"[ERROR] /state: {exc}")
 
     print("--- Done ---")
 
