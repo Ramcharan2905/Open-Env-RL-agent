@@ -1,3 +1,13 @@
+---
+title: Hospital Resource Environment
+emoji: 🏥
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_file: server.py
+pinned: false
+---
+
 # Hospital Resource Environment
 
 A real-world hospital emergency department simulator built for the **Meta PyTorch Hackathon** using the [OpenEnv](https://huggingface.co/openenv) standard. The agent acts as a hospital operations manager — triaging patients, assigning doctors by skill tier, managing bed allocation, and deciding when to discharge — all under stochastic patient arrivals and constrained hospital resources.
