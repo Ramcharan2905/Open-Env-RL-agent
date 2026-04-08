@@ -1,7 +1,7 @@
 [project]
 name = "hospital-resource-env"
 version = "0.1.0"
-description = "Hospital Resource Environment for OpenEnv Hackathon"
+description = "Hospital Resource Environment"
 requires-python = ">=3.9"
 
 dependencies = [
@@ -9,11 +9,12 @@ dependencies = [
     "uvicorn",
     "pydantic",
     "requests",
-    "openai"
+    "openai",
+    "openenv-core>=0.2.0"
 ]
 
-[tool.setuptools]
-packages = []
+[project.scripts]
+server = "server:app"
 
 [build-system]
 requires = ["setuptools"]
