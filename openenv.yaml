@@ -1,6 +1,11 @@
-spec_version: 1
-name: hospital_resource_env
-type: space
-runtime: fastapi
-app: server:app
-port: 8000
+name: hospital-resource-env
+
+entrypoint: server:app
+
+port: 7860
+
+endpoints:
+  health: /health
+  reset: /reset
+  step: /step
+  state: /state

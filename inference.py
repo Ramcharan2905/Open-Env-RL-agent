@@ -1,11 +1,11 @@
 """
-inference.py — Pure OpenEnv Client for the Hospital Resource Environment.
-Handles environment state via HTTP and decisions via the OpenAI Client.
+inference.py — OpenEnv Client for Hospital Resource Environment
 
-Complies with Meta PyTorch Hackathon requirements:
-- Uses OpenAI Python Client for all decisions.
-- Communicates with OpenEnv server via API_BASE_URL.
-- Reads MODEL_NAME and HF_TOKEN from environment.
+Complies with hackathon requirements:
+- Uses OpenAI client for decisions
+- Uses ENV_BASE_URL for environment
+- Uses API_BASE_URL for LLM (optional override)
+- Strict [START], [STEP], [END] logs
 """
 
 import os
@@ -14,53 +14,45 @@ import requests
 from openai import OpenAI
 
 # ==============================
-# Environment Configuration
+# Environment variables
 # ==============================
-
-API_BASE_URL = os.getenv(
-    "API_BASE_URL",
-    "https://ramcharan2905-hospital-resource-env.hf.space"
-)
 
 ENV_BASE_URL = os.getenv(
     "ENV_BASE_URL",
     "https://ramcharan2905-hospital-resource-env.hf.space"
 )
 
+API_BASE_URL = os.getenv("API_BASE_URL", None)  # optional override
+
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
 HF_TOKEN   = os.getenv("HF_TOKEN", "")
 
-# ✅ Correct: OpenAI client should NOT point to your env server
-client = OpenAI(api_key=HF_TOKEN)
+# OpenAI client (LLM ONLY)
+if API_BASE_URL:
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+else:
+    client = OpenAI(api_key=HF_TOKEN)
 
 
 # ==============================
-# LLM Decision Function
+# LLM Decision
 # ==============================
 
 def get_action_from_llm(observation):
-    """Uses LLM to decide next actions"""
-
     prompt = f"""
 You are a Hospital Resource Manager.
 
-Goal:
-Maximize survival and throughput while minimizing penalties.
-
 Rules:
-- Prioritize ESI-1 and ESI-2 patients first
-- Assign correct doctor tier:
-  - ESI-1 → t3
-  - ESI-2 → t2 or higher
-  - Others → any
+- Prioritize ESI-1, then ESI-2
+- Assign correct doctor tier
 - Assign beds when needed
-- Discharge patients as soon as treatment is complete
+- Discharge immediately when treated
 - Avoid illegal actions
 
 State:
 {json.dumps(observation)}
 
-Output ONLY a JSON array of actions like:
+Output ONLY a JSON array:
 [
   {{"patient_id": "...", "type": "assign_doctor", "doctor_tier": "t1"}},
   {{"patient_id": "...", "type": "assign_bed"}},
@@ -77,7 +69,6 @@ Output ONLY a JSON array of actions like:
 
         content = response.choices[0].message.content.strip()
 
-        # Extract JSON array safely
         start = content.find('[')
         end = content.rfind(']') + 1
 
@@ -92,80 +83,71 @@ Output ONLY a JSON array of actions like:
 
 
 # ==============================
-# Main Inference Loop
+# Main loop
 # ==============================
 
-def run_inference(task_id: str = "hard"):
-    """Runs one full episode and prints required logs"""
+def run_inference(task_id="hard"):
 
-    # Reset environment
+    # RESET
     try:
-        reset_resp = requests.post(
+        r = requests.post(
             f"{ENV_BASE_URL}/reset",
             json={"task_id": task_id, "seed": 42}
         )
-        reset_resp.raise_for_status()
-        obs = reset_resp.json()
+        r.raise_for_status()
+        obs = r.json()
     except Exception as e:
-        print(f"Failed to reset environment: {e}")
+        print(f"[ERROR] reset failed: {e}")
         return
 
-    # [START]
+    # STRICT FORMAT
+    print("[START]")
     print(json.dumps({
-        "type": "START",
         "task_id": task_id,
         "model": MODEL_NAME
     }))
 
     done = False
-    tick = 0
     total_score = 0.0
+    tick = 0
 
     while not done:
-        # Get action from LLM
+
         actions = get_action_from_llm(obs)
 
-        # Step environment
         try:
-            step_resp = requests.post(
+            r = requests.post(
                 f"{ENV_BASE_URL}/step",
                 json={"action": actions}
             )
-            step_resp.raise_for_status()
+            r.raise_for_status()
+            data = r.json()
 
-            step_data = step_resp.json()
-
-            obs    = step_data["observation"]
-            reward = step_data["reward"]
-            done   = step_data["done"]
+            obs = data["observation"]
+            reward = data["reward"]
+            done = data["done"]
 
             tick = obs.get("current_tick", tick + 1)
             total_score = obs.get("current_episode_score", total_score)
 
-            # [STEP]
+            print("[STEP]")
             print(json.dumps({
-                "type": "STEP",
                 "tick": tick,
                 "reward": round(reward, 2),
-                "score_so_far": round(total_score, 2),
+                "score": round(total_score, 2)
             }))
 
         except Exception as e:
-            print(f"Step failed at tick {tick}: {e}")
+            print(f"[ERROR] step failed: {e}")
             break
 
-    # [END]
+    print("[END]")
     print(json.dumps({
-        "type": "END",
         "task_id": task_id,
-        "final_score": round(total_score, 4),
+        "final_score": round(total_score, 4)
     }))
 
 
-# ==============================
-# Run all tasks
-# ==============================
-
 if __name__ == "__main__":
-    for task in ("easy", "medium", "hard"):
-        run_inference(task_id=task)
+    for task in ["easy", "medium", "hard"]:
+        run_inference(task)
