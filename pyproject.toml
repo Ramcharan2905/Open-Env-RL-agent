@@ -1,0 +1,20 @@
+[project]
+name = "hospital-resource-env"
+version = "0.1.0"
+description = "Hospital Resource Environment for OpenEnv Hackathon"
+requires-python = ">=3.9"
+
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "requests",
+    "openai"
+]
+
+[tool.setuptools]
+packages = []
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
