@@ -21,6 +21,28 @@ This is a **genuine logistics and scheduling problem**, not a toy game. The envi
 
 ---
 
+## 🚀 Live Deployment
+
+Hugging Face Space (Production Environment):
+
+```
+https://ramcharan2905-hospital-resource-env.hf.space
+```
+
+Quick health check:
+
+```bash
+curl https://ramcharan2905-hospital-resource-env.hf.space/health
+```
+
+Expected response:
+
+```json
+{"status": "healthy", "service": "hospital-resource-env"}
+```
+
+---
+
 ## Architecture
 
 ```
@@ -31,7 +53,7 @@ This is a **genuine logistics and scheduling problem**, not a toy game. The envi
                      │ HTTP (POST /reset, POST /step)
 ┌────────────────────▼────────────────────────────────┐
 │                    server.py                        │
-│         FastAPI OpenEnv Server (port 8000)          │
+│         FastAPI OpenEnv Server (port 7860)          │
 └────────────────────┬────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────┐
@@ -89,7 +111,7 @@ Each observation tick contains:
 | `patients`              | `list`       | Up to 50 patient slots (see below)        |
 | `action_masks`          | `object`     | Per-slot legal action bitmasks            |
 
-Each patient slot includes: `patient_id`, `esi_level` (1–5), `phase` (waiting/treating/treated/discharged/dead), `hp`, `wealth_multiplier`, `time_in_phase`, `treatment_ticks_remaining`.
+Each patient slot includes: `patient_id`, `esi_level` (1–5), `phase`, `hp`, `wealth_multiplier`, `time_in_phase`, `treatment_ticks_remaining`.
 
 ---
 
@@ -190,38 +212,50 @@ The grader is deterministic — the same agent on the same seed always produces 
 
 ## Setup
 
-**1. Install dependencies**
+### 1. Install dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
-**2. Configure environment variables** — copy the example and fill in your values:
+---
+
+### 2. Configure environment variables
+
 ```bash
 cp .env.example .env
 ```
-```
-API_BASE_URL=http://localhost:8000   # URL of the running environment server
-HF_TOKEN=your_huggingface_token     # Used as OpenAI API key for inference
-MODEL_NAME=gpt-4o                   # LLM to use for action decisions
-PORT=8000
+
+Example `.env`:
+
+```env
+PORT=7860
+API_BASE_URL=https://ramcharan2905-hospital-resource-env.hf.space
+ENV_BASE_URL=https://ramcharan2905-hospital-resource-env.hf.space
+HF_TOKEN=your_token_here
+MODEL_NAME=gpt-4o
 ```
 
-**3. Start the environment server**
+---
+
+### 3. Run locally (optional)
+
 ```bash
-uvicorn server:app --host 0.0.0.0 --port 8000
+uvicorn server:app --host 0.0.0.0 --port 7860
 ```
 
-**4. Run the inference agent** (in a separate terminal)
+---
+
+### 4. Run inference agent
+
 ```bash
 python inference.py
 ```
 
-**5. (Optional) Run the random baseline**
-```bash
-python random_ai_agent.py
-```
+---
 
-**6. (Optional) Validate your server is OpenEnv-compliant**
+### 5. Validate environment
+
 ```bash
 python validate_submission.py
 ```
@@ -230,39 +264,35 @@ python validate_submission.py
 
 ## Docker
 
-Build and run the environment server in a container:
+Build and run:
 
 ```bash
-# Build
 docker build -t hospital-resource-env .
-
-# Run
-docker run -p 8000:8000 hospital-resource-env
+docker run -p 7860:7860 hospital-resource-env
 ```
 
-Then test it is live:
+Test:
+
 ```bash
-curl http://localhost:8000/health
-# {"status": "healthy", "service": "hospital-resource-env"}
+curl http://localhost:7860/health
 ```
 
 ---
 
 ## Hugging Face Spaces Deployment
 
-This project is designed to be deployed as a **Docker Space** on Hugging Face Spaces, where the automated OpenEnv evaluator will call your `/reset` and `/step` endpoints.
-
 ```bash
-# Add the HF remote
 git remote add hf https://huggingface.co/spaces/YOUR_HF_USERNAME/hospital-resource-env
-
-# Push to trigger a Docker build
 git push hf main
 ```
 
-> **Important**: Set the Space SDK to **Docker** (not Gradio or Streamlit) in your Hugging Face Space settings. The `openenv.yaml` file at the root tells the evaluator how to find and launch the server.
+> **Important**: Use **Docker SDK**. The app runs on port **7860** as required by Hugging Face.
 
-Once deployed, verify it is live:
-```bash
-curl https://YOUR_HF_USERNAME-hospital-resource-env.hf.space/health
-```
+---
+
+## Final Notes
+
+- This environment is fully OpenEnv compliant
+- Supports deterministic evaluation via seeds
+- Includes both RL and LLM-based agents
+- Designed for real-world logistics complexity rather than synthetic benchmarks
