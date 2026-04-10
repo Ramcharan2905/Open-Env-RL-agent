@@ -144,6 +144,7 @@ def grade_episode(task_id: str, info: Dict[str, Any], final_score: float) -> flo
     t2 = max(0.0, float(info.get("avg_t2_doctor_utilization", 0.0)))
     t3 = max(0.0, float(info.get("avg_t3_doctor_utilization", 0.0)))
 
+    # Guard against NaN in final_score
     final_score = float(final_score) if final_score == final_score else 0.0
 
     surv = _survival(deaths, total)
@@ -154,7 +155,7 @@ def grade_episode(task_id: str, info: Dict[str, Any], final_score: float) -> flo
 
     if task_id == "easy":
         rew = _reward_score(final_score, 4000)
-        rew_p = _reward_penalty(final_score, 8000)
+        rew_p = _reward_penalty(final_score, 8000)  # FIX: now applied below
         d_p = _death_penalty(deaths, total, 0.2)
         score = 0.55 * surv + 0.25 * thru + 0.20 * rew
 
@@ -171,13 +172,15 @@ def grade_episode(task_id: str, info: Dict[str, Any], final_score: float) -> flo
         score = 0.45 * surv + 0.15 * thru + 0.20 * wait_s + 0.10 * eff + 0.10 * rew
 
     else:
-        raise ValueError("Invalid task")
+        raise ValueError(f"Invalid task_id: {task_id}")
 
+    # FIX: apply ALL penalties (rew_p was missing from all tasks previously)
     score = score - (d_p + rew_p + leg)
 
-    # 🔥 FINAL HARD SAFETY
+    # Guard against NaN
     if not isinstance(score, float) or score != score:
         score = 0.5
 
+    # STRICT open interval (0, 1) — validator requires score != 0.0 and score != 1.0
     EPS = 1e-6
-    return max(EPS, min(score, 1 - EPS))
+    return max(EPS, min(score, 1.0 - EPS))

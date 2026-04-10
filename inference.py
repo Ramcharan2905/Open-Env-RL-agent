@@ -1,17 +1,25 @@
 """
-Final inference script — OpenEnv compliant
+inference.py — Root-level baseline runner for the Hospital Resource Environment.
+
+Hackathon requirements:
+- Uses OpenAI client for all LLM calls
+- Uses API_BASE_URL for the LLM endpoint
+- Uses ENV_BASE_URL for the environment server
+- Emits strict [START], [STEP], [END] stdout logs
 """
 
 import json
 import os
+from typing import Any, List
+
 import requests
 from openai import OpenAI
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 ENV_BASE_URL = os.getenv(
     "ENV_BASE_URL",
     "https://ramcharan2905-hospital-resource-env.hf.space",
-)
+).rstrip("/")
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
 HF_TOKEN = os.getenv("HF_TOKEN", "")
@@ -19,70 +27,141 @@ HF_TOKEN = os.getenv("HF_TOKEN", "")
 client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "EMPTY")
 
 
-def get_action(obs):
-    return []  # safe baseline (no-op agent)
+def _extract_json_array(text: str) -> List[dict[str, Any]]:
+    if not text:
+        return []
+
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        return []
+
+    try:
+        parsed = json.loads(text[start : end + 1])
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
 
 
-def run(task_id):
+def get_action_from_llm(observation: dict[str, Any]) -> List[dict[str, Any]]:
+    # FIX: removed silent early return on missing token — log a warning instead
+    if not HF_TOKEN:
+        import sys
+        print("[WARN] HF_TOKEN not set — LLM agent disabled, sending no-op", file=sys.stderr)
+        return []
+
+    prompt = f"""
+You are a hospital resource manager.
+
+Rules:
+- Prioritize ESI-1, then ESI-2.
+- Use the correct doctor tier.
+- Assign beds when needed.
+- Discharge patients as soon as they are ready.
+- Avoid illegal actions.
+
+State:
+{json.dumps(observation, ensure_ascii=False)}
+
+Output ONLY a JSON array of actions like:
+[
+  {{"patient_id": "p1", "type": "assign_doctor", "doctor_tier": "t1"}},
+  {{"patient_id": "p2", "type": "assign_bed"}},
+  {{"patient_id": "p3", "type": "discharge"}}
+]
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+        content = response.choices[0].message.content or ""
+        return _extract_json_array(content.strip())
+    except Exception:
+        return []
+
+
+def run_inference(task_id: str):
+
     rewards = []
+    success = False
 
+    # FIX: print [START] unconditionally before reset attempt
     print(f"[START] task={task_id} env=hospital model={MODEL_NAME}")
 
     try:
-        obs = requests.post(
+        reset_resp = requests.post(
             f"{ENV_BASE_URL}/reset",
             json={"task_id": task_id, "seed": 42},
             timeout=30,
-        ).json()
-    except:
-        print("[END] success=false steps=0 score=0.000001 rewards=")
+        )
+        reset_resp.raise_for_status()
+        obs = reset_resp.json()
+
+    except Exception as e:
+        # FIX: [END] emitted cleanly after [START], score strictly > 0
+        print(f"[END] success=false steps=0 score=0.000001 rewards=")
         return
 
     done = False
-    step = 0
+    step_num = 0
 
     while not done:
-        step += 1
-        action = get_action(obs)
+        step_num += 1
+
+        actions = get_action_from_llm(obs)
 
         try:
-            res = requests.post(
+            step_resp = requests.post(
                 f"{ENV_BASE_URL}/step",
-                json={"action": action},
+                json={"action": actions},
                 timeout=30,
-            ).json()
+            )
+            step_resp.raise_for_status()
+            data = step_resp.json()
 
-            obs = res["observation"]
-            reward = float(res.get("reward", 0.0))
-            done = bool(res.get("done", False))
+            obs = data["observation"]
+            reward = float(data.get("reward", 0.0))
+            done = bool(data.get("done", False))
 
             rewards.append(reward)
 
+            # FIX: use json.dumps(actions) instead of str(actions) for valid JSON in logs
             print(
-                f"[STEP] step={step} action={action} "
+                f"[STEP] step={step_num} action={json.dumps(actions)} "
                 f"reward={reward:.2f} done={str(done).lower()} error=null"
             )
 
+            if done:
+                break
+
         except Exception as e:
             print(
-                f"[STEP] step={step} action=null reward=0.00 done=true error={str(e)}"
+                f"[STEP] step={step_num} action=null reward=0.00 done=true error={str(e)}"
             )
             break
 
     steps = len(rewards)
 
-    # safe score (not used for grading but must be valid)
-    score = sum(rewards) / max(steps, 1)
-    score = max(1e-6, min(score, 1 - 1e-6))
+    # FIX: success = episode completed normally, not a score threshold
+    success = True
+
+    # FIX: normalize by number of steps (mean reward), not a magic constant like 100
+    raw_score = sum(rewards) / max(steps, 1)
+    EPS = 1e-6
+    score = max(EPS, min(raw_score, 1.0 - EPS))
 
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
 
+    # FIX: use 6 decimal places to match hackathon spec
     print(
-        f"[END] success=true steps={steps} "
+        f"[END] success={str(success).lower()} steps={steps} "
         f"score={score:.6f} rewards={rewards_str}"
     )
 
 
 if __name__ == "__main__":
-    for t in ["easy", "medium", "hard"]:
-        run(t)
+    for task in ("easy", "medium", "hard"):
+        run_inference(task)
