@@ -10,12 +10,23 @@ from pydantic import BaseModel, Field
 from environment import HospitalEnv
 from models import HospitalAction, OpenEnvAction
 
+# ── strict open-interval clamp used everywhere a score/reward leaves the server ─
+_EPS = 1e-6
+
+def _safe_score(raw: float) -> float:
+    """Clamp any float to the strict open interval (0, 1)."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = 0.5
+    if v != v:          # NaN guard
+        v = 0.5
+    return max(_EPS, min(v, 1.0 - _EPS))
+
 
 class ResetRequest(BaseModel):
     """Optional reset parameters for creating or reconfiguring an episode."""
 
-    # The server can switch difficulty, random seed, and episode horizon on
-    # every reset request so a single process can host many experiment setups.
     task_id: str = "hard"
     seed: int = 42
     max_ticks: Optional[int] = None
@@ -24,12 +35,15 @@ class ResetRequest(BaseModel):
 class StepRequest(BaseModel):
     """Action payload accepted by the step endpoint."""
 
-    # `action` is intentionally typed as `Any` because callers may send:
-    # - `null` for no action
-    # - one action object
-    # - a sparse list of actions
-    # - a full per-slot action plan
     action: Any = Field(default=None)
+
+
+class GradeRequest(BaseModel):
+    """Payload for the /grade endpoint."""
+
+    task_id: str
+    info: Dict[str, Any] = Field(default_factory=dict)
+    final_score: float = 0.0
 
 
 app = FastAPI(
@@ -38,7 +52,6 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Keep one process-wide environment instance and replace it on `/reset`.
 _env = HospitalEnv(seed=42, task_id="hard")
 
 
@@ -49,8 +62,6 @@ def _coerce_action_payload(action_payload: Any) -> Any:
         return None
 
     if isinstance(action_payload, list):
-        # The step endpoint accepts batched actions, so lists are converted item
-        # by item into the internal runtime action model.
         coerced_actions: List[HospitalAction] = []
         for action_item in action_payload:
             if isinstance(action_item, (HospitalAction, OpenEnvAction)):
@@ -60,12 +71,9 @@ def _coerce_action_payload(action_payload: Any) -> Any:
         return coerced_actions
 
     if isinstance(action_payload, (HospitalAction, OpenEnvAction)):
-        # This path is mostly useful for in-process callers or tests that have
-        # already built typed model instances.
         return action_payload
 
     if isinstance(action_payload, dict):
-        # Single JSON actions are treated as OpenEnv-style payloads.
         return OpenEnvAction(**action_payload).to_internal()
 
     return None
@@ -73,8 +81,6 @@ def _coerce_action_payload(action_payload: Any) -> Any:
 
 @app.get("/")
 async def root() -> Dict[str, str]:
-    """Basic service metadata."""
-
     return {
         "service": "hospital-resource-env",
         "status": "ok",
@@ -83,8 +89,6 @@ async def root() -> Dict[str, str]:
 
 @app.get("/health")
 async def health() -> Dict[str, str]:
-    """Health-check endpoint used by deployment validators."""
-
     return {
         "status": "healthy",
         "service": "hospital-resource-env",
@@ -96,30 +100,64 @@ async def reset(request: ResetRequest = ResetRequest()) -> Dict[str, Any]:
     """Reset the environment and return the initial typed observation."""
 
     global _env
-    # Reset is also how callers switch task presets or seeds over HTTP.
     _env = HospitalEnv(seed=request.seed, max_ticks=request.max_ticks, task_id=request.task_id)
-    # The reset response is only the observation, because reward/done/info are
-    # meaningful only after at least one environment step.
     observation = _env.openenv_observation()
     return observation.model_dump()
 
 
 @app.post("/step")
 async def step(request: StepRequest) -> Dict[str, Any]:
-    """Apply one step of action(s) and return observation, reward, done, and info."""
+    """Apply one step and return observation, reward, done, and info."""
 
     action = _coerce_action_payload(request.action)
-    # The internal env still returns the standard `(obs, reward, done, info)` tuple.
-    # We intentionally return a fresh observation from `_env` instead of the raw
-    # local `observation` variable so the API surface always goes through the
-    # OpenEnv serialization path.
     observation, reward, done, info = _env.step(action)
+
+    # FIX: clamp reward to strict open interval so validator never sees 0.0 or 1.0
+    safe_reward = _safe_score(reward)
+
+    # FIX: also clamp episode_grade inside info when present (emitted on done=True)
+    if "episode_grade" in info:
+        info["episode_grade"] = _safe_score(info["episode_grade"])
+
     return {
         "observation": _env.openenv_observation().model_dump(),
-        "reward": reward,
+        "reward": safe_reward,
         "done": done,
         "info": info,
     }
+
+
+@app.post("/grade")
+async def grade(request: GradeRequest) -> Dict[str, Any]:
+    """Grade an episode — required by the OpenEnv validator (Phase 2).
+
+    The validator calls POST /grade with task_id, info, and final_score.
+    It expects a JSON response with a 'score' field strictly in (0, 1).
+    """
+
+    from tasks import grade_episode
+
+    try:
+        raw = grade_episode(request.task_id, request.info, request.final_score)
+    except Exception:
+        raw = 0.5
+
+    return {"score": _safe_score(raw)}
+
+
+@app.get("/grade/{task_id}")
+async def grade_current(task_id: str) -> Dict[str, Any]:
+    """Grade the currently running episode for the given task_id (convenience GET)."""
+
+    from tasks import grade_episode
+
+    try:
+        info = _env._build_info()
+        raw = grade_episode(task_id, info, _env.current_score)
+    except Exception:
+        raw = 0.5
+
+    return {"score": _safe_score(raw)}
 
 
 @app.get("/state")
