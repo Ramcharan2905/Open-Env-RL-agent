@@ -80,7 +80,12 @@ Output ONLY a JSON array of actions like:
         return []
 
 
-def run_inference(task_id: str) -> None:
+def run_inference(task_id: str):
+
+    rewards = []
+    steps = 0
+    success = False
+
     try:
         reset_resp = requests.post(
             f"{ENV_BASE_URL}/reset",
@@ -89,21 +94,20 @@ def run_inference(task_id: str) -> None:
         )
         reset_resp.raise_for_status()
         obs = reset_resp.json()
-    except Exception as exc:
-        print("[START]")
-        print(json.dumps({"task_id": task_id, "model": MODEL_NAME}))
-        print("[END]")
-        print(json.dumps({"task_id": task_id, "error": f"reset failed: {exc}"}))
+
+    except Exception as e:
+        print(f"[START] task={task_id} env=hospital model={MODEL_NAME}")
+        print(f"[END] success=false steps=0 score=0.00 rewards=")
         return
 
-    print("[START]")
-    print(json.dumps({"task_id": task_id, "model": MODEL_NAME}))
+    print(f"[START] task={task_id} env=hospital model={MODEL_NAME}")
 
     done = False
-    tick = 0
-    total_score = float(obs.get("current_episode_score", 0.0))
+    step_num = 0
 
     while not done:
+        step_num += 1
+
         actions = get_action_from_llm(obs)
 
         try:
@@ -118,32 +122,35 @@ def run_inference(task_id: str) -> None:
             obs = data["observation"]
             reward = float(data.get("reward", 0.0))
             done = bool(data.get("done", False))
-            tick = int(obs.get("current_tick", tick + 1))
-            total_score = float(obs.get("current_episode_score", total_score))
 
-            print("[STEP]")
+            rewards.append(reward)
+
             print(
-                json.dumps(
-                    {
-                        "tick": tick,
-                        "reward": round(reward, 2),
-                        "score_so_far": round(total_score, 2),
-                    }
-                )
+                f"[STEP] step={step_num} action={str(actions)} "
+                f"reward={reward:.2f} done={str(done).lower()} error=null"
             )
-        except Exception as exc:
-            print("[STEP]")
-            print(json.dumps({"tick": tick, "error": str(exc)}))
+
+            if done:
+                break
+
+        except Exception as e:
+            print(
+                f"[STEP] step={step_num} action=null reward=0.00 done=true error={str(e)}"
+            )
             break
 
-    print("[END]")
+    steps = len(rewards)
+
+    total_reward = sum(rewards)
+    score = max(1e-6, min(total_reward / 100.0, 1 - 1e-6))  # normalize
+
+    success = score > 0.01
+
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+
     print(
-        json.dumps(
-            {
-                "task_id": task_id,
-                "final_score": round(total_score, 4),
-            }
-        )
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={score:.4f} rewards={rewards_str}"
     )
 
 
