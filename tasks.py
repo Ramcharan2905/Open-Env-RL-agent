@@ -1,6 +1,6 @@
 """
 Task presets and deterministic graders for the hospital environment.
-Fully fixed for OpenEnv hackathon validation.
+FINAL VERSION — OpenEnv compliant and validator-safe
 """
 
 from typing import Any, Dict
@@ -28,7 +28,6 @@ def build_task_definition(task_id: str, base_config: EnvConfig) -> TaskDefinitio
             name="Low-Stakes Shift",
             difficulty="easy",
             description="Basic hospital flow without penalties.",
-            max_ticks=50,
             config=base_config.model_copy(
                 update={
                     "use_wait_penalty": False,
@@ -47,7 +46,6 @@ def build_task_definition(task_id: str, base_config: EnvConfig) -> TaskDefinitio
             name="Resource Balance",
             difficulty="medium",
             description="Doctor costs + congestion.",
-            max_ticks=50,
             config=base_config.model_copy(
                 update={
                     "total_t1_docs": 4,
@@ -56,10 +54,6 @@ def build_task_definition(task_id: str, base_config: EnvConfig) -> TaskDefinitio
                     "total_beds": 8,
                     "mean_arrivals_per_tick": 2.6,
                     "max_arrivals_per_tick": 10,
-                    "discharge_threshold": 68.0,
-                    "use_wait_penalty": False,
-                    "use_post_treat_penalty": False,
-                    "use_wealth_multiplier": False,
                     "doctor_costs": {1: 3.0, 2: 8.0, 3: 18.0},
                 }
             ),
@@ -71,7 +65,6 @@ def build_task_definition(task_id: str, base_config: EnvConfig) -> TaskDefinitio
             name="Full Hospital Control",
             difficulty="hard",
             description="Full penalties + surge.",
-            max_ticks=50,
             config=base_config.model_copy(
                 update={
                     "total_t1_docs": 3,
@@ -80,10 +73,6 @@ def build_task_definition(task_id: str, base_config: EnvConfig) -> TaskDefinitio
                     "total_beds": 5,
                     "mean_arrivals_per_tick": 3.2,
                     "max_arrivals_per_tick": 12,
-                    "recovery_rate": 1.5,
-                    "discharge_threshold": 75.0,
-                    "wait_penalty_multiplier": 3.2,
-                    "post_treat_penalty": 16.0,
                     "death_penalty": 300.0,
                     "doctor_costs": {1: 4.0, 2: 10.0, 3: 22.0},
                 }
@@ -101,20 +90,24 @@ def _safe_div(n, d):
     return n / d if d > 0 else 0.0
 
 
+def _clip01(x):
+    return max(0.0, min(1.0, x))
+
+
 def _survival(deaths, total):
-    return max(0.0, min(1.0, 1.0 - _safe_div(deaths, total)))
+    return _clip01(1.0 - _safe_div(deaths, total))
 
 
 def _throughput(discharged, total):
-    return max(0.0, min(1.0, _safe_div(discharged, total)))
+    return _clip01(_safe_div(discharged, total))
 
 
 def _wait_score(wait):
-    return max(0.0, min(1.0, 1.0 / (1.0 + max(wait, 0.0))))
+    return _clip01(1.0 / (1.0 + max(wait, 0.0)))
 
 
 def _reward_score(score, scale):
-    return max(0.0, min(1.0, score / scale))
+    return _clip01(score / scale)
 
 
 def _reward_penalty(score, scale):
@@ -131,8 +124,8 @@ def _legality_penalty(illegals, total):
 
 
 def _doctor_efficiency(t1, t2, t3):
-    d = 0.5 * abs(t1 - 0.7) + 0.3 * abs(t2 - 0.45) + 0.2 * abs(t3 - 0.25)
-    return max(0.0, min(1.0, 1.0 - d))
+    deviation = 0.5 * abs(t1 - 0.7) + 0.3 * abs(t2 - 0.45) + 0.2 * abs(t3 - 0.25)
+    return _clip01(1.0 - deviation)
 
 
 # ==============================
@@ -163,30 +156,28 @@ def grade_episode(task_id: str, info: Dict[str, Any], final_score: float) -> flo
         rew = _reward_score(final_score, 4000)
         rew_p = _reward_penalty(final_score, 8000)
         d_p = _death_penalty(deaths, total, 0.2)
-        score = 0.55*surv + 0.25*thru + 0.20*rew
+        score = 0.55 * surv + 0.25 * thru + 0.20 * rew
 
     elif task_id == "medium":
         rew = _reward_score(final_score, 2500)
         rew_p = _reward_penalty(final_score, 5000)
         d_p = _death_penalty(deaths, total, 0.25)
-        score = 0.40*surv + 0.20*thru + 0.20*wait_s + 0.10*eff + 0.10*rew
+        score = 0.40 * surv + 0.20 * thru + 0.20 * wait_s + 0.10 * eff + 0.10 * rew
 
     elif task_id == "hard":
         rew = _reward_score(final_score, 1500)
         rew_p = _reward_penalty(final_score, 3000)
         d_p = _death_penalty(deaths, total, 0.35)
-        score = 0.45*surv + 0.15*thru + 0.20*wait_s + 0.10*eff + 0.10*rew
+        score = 0.45 * surv + 0.15 * thru + 0.20 * wait_s + 0.10 * eff + 0.10 * rew
 
     else:
         raise ValueError("Invalid task")
 
     score = score - (d_p + rew_p + leg)
 
-    # 🔥 CRITICAL FIXES
-    if score != score:  # NaN
+    # 🔥 FINAL HARD SAFETY
+    if not isinstance(score, float) or score != score:
         score = 0.5
 
     EPS = 1e-6
-    score = max(EPS, min(score, 1 - EPS))
-
-    return score
+    return max(EPS, min(score, 1 - EPS))
