@@ -258,4 +258,6 @@ def grade_episode(task_id: str, info: Dict[str, Any], final_score: float) -> flo
     else:
         raise ValueError(f"Unknown task_id: {task_id!r}")
 
-    return max(0.0, min(1.0, score))
+    epsilon = 1e-6
+    score = max(epsilon, min(score, 1 - epsilon))
+    return score
