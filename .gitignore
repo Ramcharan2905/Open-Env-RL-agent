@@ -1,0 +1,11 @@
+# Never commit secrets
+.env
+*.pth
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+outputs/
+*.egg-info/
+.venv/
+venv/
